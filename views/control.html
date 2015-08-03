@@ -1,0 +1,83 @@
+{% extends "layout.html" %}
+{% block title %}Status{% endblock %}
+{% block article %}
+    <h2>Status</h2>
+    <form method="post" action="/">
+        <input type="hidden" name="method" value="setsocket" />
+        <select name="socket">
+            {% for socket in sockets.keys() %}
+                <option value="{{ socket }}" {{ 'selected' if socket == socket_name }}>{{ socket }}</option>
+            {% endfor %}
+        </select>
+        <input type="submit" value="Change interface" />
+    </form>
+    <table>
+        <tbody>
+            <tr>
+                <th>State</th>
+                <td>{{ state }}</td>
+            </tr>
+            <tr>
+                <th>Interface MAC</th>
+                <td>{{ status['address'] }}</td>
+            </tr>
+            {% if status['wpa_state'] == 'COMPLETED' %}
+                <tr>
+                    <th>Connected to</th>
+                    <td>{{ status['ssid'] }} ({{ status['bssid'] }})</td>
+                </tr>
+                <tr>
+                    <th>IP Address</th>
+                    <td>{{ status['ip_address'] }}</td>
+                </tr>
+                <tr>
+                    <th></th>
+                    <td>
+                        <form method="post" action="/">
+                            <input type="hidden" name="method" value="disconnect" />
+                            <input type="submit" value="Disconnect" />
+                        </form>
+                    </td>
+            {% endif %}
+        </tbody>
+    </table>
+    <h2>Connection</h2>
+    <div>Enter network details below, or run a scan to find a network.</div>
+    <form method="post" action="/">
+        <input type="hidden" name="method" value="connect" />
+        <label>SSID <input type="text" name="ssid" value="{{ ssid }}" /></label>
+        <label>Passphrase <input type="text" name="passphrase" /></label>
+        <input type="submit" value="Connect" />
+    </form>
+    <h2>Scan</h2>
+    <form method="post" action="/">
+        <input type="hidden" name="method" value="scan" />
+        <input type="submit" value="Scan" />
+    </form>
+    {% if networks %}
+        <form method="get" action="/">
+            <table>
+                <thead>
+                    <tr>
+                        <th>SSID</th>
+                        <th>Frequency</th>
+                        <th>Signal</th>
+                        <th>Secured</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for network in networks %}
+                        <tr>
+                            <td>{{ network['ssid'] }}</td>
+                            <td>{{ network['freq'] }} KHz</td>
+                            <td>{{ network['level'] }} dBm</td>
+                            <td>{{ 'Yes' if 'WPA' in network['flags'] else 'No' }}</td>
+                            <td><button type="submit" name="ssid" value="{{ network['ssid'] }}">Use</button></td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </form>
+    {% endif %}
+{% endblock %}
