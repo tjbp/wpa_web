@@ -21,11 +21,12 @@ along with wpa_web.  If not, see <http://www.gnu.org/licenses/>.
 <html lang="en">
     <head>
         <meta charset="utf-8">
-        <title>{% block title %}{% endblock %} - Wifi Bridge Admin</title>
-        <meta name="author" content="M6ONX">
+        <title>{% block title %}{% endblock %} - wpa_web</title>
+        <meta name="author" content="Tom Pitcher">
         <style type="text/css">
             body { width: 50%; margin: 0 auto; }
             header h1 { text-align: center; }
+            header p { text-align: center; }
             nav ul { list-style: none; width: 100%; display: table; padding: 0; table-layout: fixed; }
             nav ul li { display: table-cell; width: auto; text-align: center; }
             footer { text-align: center; margin-top: 2em;}
@@ -34,7 +35,8 @@ along with wpa_web.  If not, see <http://www.gnu.org/licenses/>.
     </head>
     <body>
         <header>
-            <h1>Wifi Bridge Admin</h1>
+            <h1>wpa_web</h1>
+            <p>HTTP interface for wpa_supplicant</p>
         </header>
         <nav>
             <ul>
@@ -46,7 +48,7 @@ along with wpa_web.  If not, see <http://www.gnu.org/licenses/>.
             {% block article %}
             {% endblock %}
         </article>
-        <footer>Copyright &copy; 2015 Tom Pitcher</footer>
+        <footer>Licensed under the GNU GPL v3.</footer>
         <script src="js/scripts.js"></script>
     </body>
 </html>

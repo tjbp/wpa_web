@@ -15,13 +15,18 @@
 # You should have received a copy of the GNU General Public License
 # along with wpa_web.  If not, see <http://www.gnu.org/licenses/>.
 
-import os, sys, stat, psutil, subprocess, time, wpactrl, string
+import os, sys, signal, threading, stat, psutil, subprocess, time, wpactrl, string, json
 from twisted.web import server, resource
 from twisted.internet import reactor, endpoints
-from jinja2 import Environment, PackageLoader
+from jinja2 import Environment, FileSystemLoader
 
 # Set up template system
-env = Environment(loader=PackageLoader('wpa_web', 'views'))
+cwd_template_dir = '{}/views'.format(os.path.dirname(os.path.realpath(__file__)))
+
+if os.path.isdir(cwd_template_dir):
+    env = Environment(loader=FileSystemLoader(cwd_template_dir))
+else:
+    env = Environment(loader=FileSystemLoader('/usr/lib/wpa_web/views'))
 
 def error(request, message):
     request.setResponseCode(500)
@@ -46,13 +51,12 @@ def set_socket(new_socket):
 def scan():
     global wpa, wpa_event, networks
     wpa.request('SCAN')
-    while True:
-        if wpa_event.recv() and wpa_event.pending() == False:
-            networks = parse_wpa_list(wpa.scanresults())
-            # Sort by signal level
-            networks = sorted(networks, key=lambda network: network['level'])
-            break
-        time.sleep(0.5)
+    while wpa_event.pending():
+        wpa_event.recv()
+        time.sleep(0.1)
+    networks = parse_wpa_list(wpa.scanresults())
+    # Sort by signal level
+    networks = sorted(networks, key=lambda network: network['level'])
 
 # Connect to an SSID with an optional passphrase
 def connect(ssid, passphrase):
@@ -69,28 +73,49 @@ def connect(ssid, passphrase):
         passphrase_output = parse_wpa(subprocess.check_output(['wpa_passphrase', ssid, passphrase]))
         wpa.request('SET_NETWORK {0} psk {1}'.format(id, passphrase_output['psk']))
     wpa.request('SELECT_NETWORK {0}'.format(id))
+    while wpa_event.pending():
+        wpa_event.recv()
+        time.sleep(0.1)
+    timeout = time.time() + 20
+    last_status = ''
     while True:
-        if get_status() == 'COMPLETED':
+        if time.time() > timeout:
+            return
+        status = get_status()
+        # These are two patterns that seem to occur with incorrect passwords
+        if status == 'SCANNING' and last_status == '4WAY_HANDSHAKE':
+            return False
+        if status == 'DISCONNECTED' and last_status == 'AUTHENTICATING':
+            return False
+        if status == 'COMPLETED':
             dhcp_request()
-            break
-        time.sleep(0.5)
+            return True
+        last_status = status
+        time.sleep(1)
 
 # Disconnect from anything existing
 def disconnect():
-    global wpa, dhclient
+    global wpa, wpa_event, dhclient, state, socket_name
     if dhclient:
         dhclient.terminate()
     wpa.request('DISCONNECT')
-    while True:
-        if wpa_event.recv() and wpa_event.pending() == False:
-            break
-        time.sleep(0.5)
+    while wpa_event.pending():
+        wpa_event.recv()
+        time.sleep(0.1)
+    state = {}
+    DEVNULL = open(os.devnull, 'wb')
+    dhclient = subprocess.Popen(['/usr/bin/ip', 'addr', 'flush', 'dev', socket_name], stdout=DEVNULL, stderr=DEVNULL)
 
 # Fire up dhclient and send a client request
 def dhcp_request():
     global socket_name, dhclient
+    client = '/usr/bin/dhclient'
+    if not os.path.isfile(client) or not os.access(client, os.X_OK):
+        return
+    if 'ip_address' in parse_wpa(wpa.request('STATUS-VERBOSE')):
+        return
     DEVNULL = open(os.devnull, 'wb')
-    dhclient = subprocess.Popen(['dhclient', '-d', '-1', socket_name], stdout=DEVNULL, stderr=DEVNULL)
+    dhclient = subprocess.Popen(['/usr/bin/dhclient', '-d', '-1', socket_name], stdout=DEVNULL, stderr=DEVNULL)
 
 # Parse the output of a wpa_ctrl command
 def parse_wpa(output):
@@ -133,6 +158,28 @@ def find_network(needle_ssid):
             return id
     return False
 
+def store_state():
+    global state_file, state
+    file = open(state_file, 'w')
+    json.dump(state, file)
+
+def restore_state():
+    global state_file, state
+    if not os.path.isfile(state_file):
+        return
+    file = open(state_file, 'r')
+    state = json.load(file)
+    if 'ssid' in state:
+        print('Restoring connection to {}'.format(state['ssid']))
+        connect(state['ssid'], state['passphrase'])
+
+def shutdown(signal, frame):
+    global wpa_event
+    print('Shutting down...')
+    store_state()
+    wpa_event.detach()
+    sys.exit(0)
+
 # Root controller
 class Root(resource.Resource):
     def getChild(self, name, request):
@@ -145,28 +192,39 @@ class Root(resource.Resource):
         return resource.Resource.getChild(self, name, request)
 
     def render_GET(self, request):
-        global socket_name, socket, wpa, networks
+        global socket_name, socket, wpa, networks, error
         template = env.get_template('control.html')
         status = parse_wpa(wpa.request('STATUS-VERBOSE'))
         if status['wpa_state'] == 'COMPLETED':
-            state = 'Connected'
+            state_text = 'Connected'
         elif status['wpa_state'] == 'SCANNING':
-            state = 'Scanning'
+            state_text = 'Scanning'
         else:
-            state = 'Disconnected'
+            state_text = 'Disconnected'
         ssid = request.args['ssid'][0] if 'ssid' in request.args else ''
-        return template.render(sockets=sockets, socket_name=socket_name, status=status, state=state, networks=networks, ssid=ssid).encode('utf-8')
+        error_cache = error
+        error = ''
+        return template.render(sockets=sockets, socket_name=socket_name, status=status, state=state_text, networks=networks, ssid=ssid, error=error_cache).encode('utf-8')
 
     def render_POST(self, request):
-        global wpa, wpa_event
+        global wpa, wpa_event, state, error
         if request.args['method'][0] == 'setsocket':
             set_socket(request.args['socket'][0])
         elif request.args['method'][0] == 'scan':
             scan()
         elif request.args['method'][0] == 'connect':
-            connect(request.args['ssid'][0], request.args['passphrase'][0])
+            result = connect(request.args['ssid'][0], request.args['passphrase'][0])
+            if result is True:
+                state['ssid'] = request.args['ssid'][0]
+                state['passphrase'] = request.args['passphrase'][0]
+            elif result is False:
+                error = 'Wrong password'
+            else:
+                error = 'Connection timed out'
         elif request.args['method'][0] == 'disconnect':
             disconnect()
+        elif request.args['method'][0] == 'dhcp':
+            dhcp_request()
 
         request.redirect('/')
         return ''
@@ -186,13 +244,18 @@ class Diagnostics(Root):
 
 # Main loop
 def main():
-    global sockets, networks, dhclient
+    global sockets, networks, dhclient, state_file, state, error
     sockets = {}
     networks = []
     dhclient = False
+    state = {}
+    state_file = '/var/lib/wpa_web/state.json'
+    error = ''
     port = 80
 
-    print 'wpa_cli 1.0.0 (Copyright 2015 Tom Pitcher)'
+    print 'wpa_web 1.0.0 (Copyright 2015 Tom Pitcher)'
+
+    signal.signal(signal.SIGINT, shutdown)
 
     site = server.Site(Root())
     reactor.listenTCP(port, site)
@@ -233,18 +296,11 @@ def main():
     set_socket(socket)
     print 'Using socket %s' % socket
 
-    # Check for keyboard interrupts
-    try:
-        while True:
-            reactor.iterate()
-            time.sleep(0.001)
-    except KeyboardInterrupt:
-        # Detach the wpa_ctrl event handler
-        wpa_event.detach()
-        # Output a newline
-        print ''
-        # Exit without error status
-        sys.exit(0)
+    restore_state()
 
-if __name__=="__main__":
+    while True:
+        reactor.iterate()
+        time.sleep(0.001)
+
+if __name__ == "__main__":
     main()

@@ -20,6 +20,9 @@ along with wpa_web.  If not, see <http://www.gnu.org/licenses/>.
 {% extends "layout.html" %}
 {% block title %}Status{% endblock %}
 {% block article %}
+    {% if error %}
+    <h2>Error: {{ error }}</h2>
+    {% endif %}
     <h2>Status</h2>
     <form method="post" action="/">
         <input type="hidden" name="method" value="setsocket" />
@@ -57,6 +60,18 @@ along with wpa_web.  If not, see <http://www.gnu.org/licenses/>.
                             <input type="submit" value="Disconnect" />
                         </form>
                     </td>
+                </tr>
+                {% if not status['ip_address'] %}
+                    <tr>
+                        <th></th>
+                        <td>
+                            <form method="post" action="/">
+                                <input type="hidden" name="method" value="dhcp" />
+                                <input type="submit" value="Get IP address" />
+                            </form>
+                        </td>
+                    </tr>
+                {% endif %}
             {% endif %}
         </tbody>
     </table>
