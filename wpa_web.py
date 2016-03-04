@@ -49,14 +49,14 @@ def set_socket(new_socket):
 
 # Run a scan and wait for the results before returning
 def scan():
-    global wpa, wpa_event, networks
+    global wpa, wpa_event, networks, socket_name
     wpa.request('SCAN')
     while wpa_event.pending():
         wpa_event.recv()
         time.sleep(0.1)
-    networks = parse_wpa_list(wpa.scanresults())
+    networks[socket_name] = parse_wpa_list(wpa.scanresults())
     # Sort by signal level
-    networks = sorted(networks, key=lambda network: network['level'])
+    networks[socket_name] = sorted(networks[socket_name], key=lambda network: network['level'])
 
 # Connect to an SSID with an optional passphrase
 def connect(ssid, passphrase):
@@ -102,7 +102,7 @@ def disconnect():
     while wpa_event.pending():
         wpa_event.recv()
         time.sleep(0.1)
-    state = {}
+    state[socket_name] = {}
     DEVNULL = open(os.devnull, 'wb')
     dhclient = subprocess.Popen(['/usr/bin/ip', 'addr', 'flush', 'dev', socket_name], stdout=DEVNULL, stderr=DEVNULL)
 
@@ -164,14 +164,14 @@ def store_state():
     json.dump(state, file)
 
 def restore_state():
-    global state_file, state
+    global state_file, state, socket_name
     if not os.path.isfile(state_file):
         return
     file = open(state_file, 'r')
     state = json.load(file)
     if 'ssid' in state:
-        print('Restoring connection to {}'.format(state['ssid']))
-        connect(state['ssid'], state['passphrase'])
+        print('Restoring connection to {}'.format(state[socket_name]['ssid']))
+        connect(state[socket_name]['ssid'], state[socket_name]['passphrase'])
 
 def shutdown(signal, frame):
     global wpa_event
@@ -192,7 +192,7 @@ class Root(resource.Resource):
         return resource.Resource.getChild(self, name, request)
 
     def render_GET(self, request):
-        global socket_name, socket, wpa, networks, error
+        global sockets, socket_name, socket, wpa, networks, error
         template = env.get_template('control.html')
         status = parse_wpa(wpa.request('STATUS-VERBOSE'))
         if status['wpa_state'] == 'COMPLETED':
@@ -204,10 +204,10 @@ class Root(resource.Resource):
         ssid = request.args['ssid'][0] if 'ssid' in request.args else ''
         error_cache = error
         error = ''
-        return template.render(sockets=sockets, socket_name=socket_name, status=status, state=state_text, networks=networks, ssid=ssid, error=error_cache).encode('utf-8')
+        return template.render(sockets=sockets, socket_name=socket_name, status=status, state=state_text, networks=networks[socket_name], ssid=ssid, error=error_cache).encode('utf-8')
 
     def render_POST(self, request):
-        global wpa, wpa_event, state, error
+        global wpa, wpa_event, state, error, socket_name
         if request.args['method'][0] == 'setsocket':
             set_socket(request.args['socket'][0])
         elif request.args['method'][0] == 'scan':
@@ -215,8 +215,9 @@ class Root(resource.Resource):
         elif request.args['method'][0] == 'connect':
             result = connect(request.args['ssid'][0], request.args['passphrase'][0])
             if result is True:
-                state['ssid'] = request.args['ssid'][0]
-                state['passphrase'] = request.args['passphrase'][0]
+                state[socket_name]['ssid'] = request.args['ssid'][0]
+                state[socket_name]['passphrase'] = request.args['passphrase'][0]
+                print(state)
             elif result is False:
                 error = 'Wrong password'
             else:
@@ -246,21 +247,21 @@ class Diagnostics(Root):
 def main():
     global sockets, networks, dhclient, state_file, state, error
     sockets = {}
-    networks = []
+    networks = {}
     dhclient = False
     state = {}
     state_file = '/var/lib/wpa_web/state.json'
     error = ''
     port = 80
 
-    print 'wpa_web 1.0.0 (Copyright 2015 Tom Pitcher)'
+    print('wpa_web 1.0.0 (Copyright 2015 Tom Pitcher)')
 
     signal.signal(signal.SIGINT, shutdown)
 
     site = server.Site(Root())
     reactor.listenTCP(port, site)
     reactor.startRunning(False)
-    print 'Started web server on port %d' % port
+    print('Started web server on port {}'.format(port))
 
     # Find running wpa_supplicant process
     wpa_supplicant_running = False
@@ -279,7 +280,7 @@ def main():
         try:
             for i in os.listdir(run):
                 sockets[i] = os.path.join(run, i)
-        except OSError, error:
+        except (OSError, error):
             sys.stderr.write('Cannot read wpa_supplicant run directory at %s. Make sure this server script has permissions to read that directory.\n' % run)
             sys.exit(1)
     else:
@@ -290,11 +291,16 @@ def main():
         sys.stderr.write('Cannot find any wpa_supplicant sockets in %s. Check wpa_supplicant is running and that its configuration has a ctrl_interface directive.\n' % run)
         sys.exit(1)
 
+    for socket_name in sockets:
+        if socket_name not in state:
+            state[socket_name] = {}
+        networks[socket_name] = []
+
     socket = sockets.iterkeys().next()
 
     # Use the first found socket as the default
     set_socket(socket)
-    print 'Using socket %s' % socket
+    print('Using socket {}'.format(socket))
 
     restore_state()
 
